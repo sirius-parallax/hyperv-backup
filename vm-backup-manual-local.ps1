@@ -22,154 +22,141 @@ Write-Log "Backup of virtual machines started..."
 # Get list of all virtual machines on local Hyper-V host
 $vms = Get-VM
 
-# If virtual machines are found
-if ($vms.Count -gt 0) {
-    # Create a numbered list of virtual machines
-    Write-Log "Available virtual machines:"
-    $vmList = @()
-    $index = 1
-    foreach ($vm in $vms) {
-        $vmList += [PSCustomObject]@{
-            Index = $index
-            Name  = $vm.Name
-            VM    = $vm
-        }
-        Write-Log "$index - $($vm.Name)"
-        $index++
-    }
+foreach ($vm in $vms) {
+    $vmName = $vm.Name
+    $vmBackupPath = Join-Path -Path $backupRoot -ChildPath $vmName
+    $currentExportPath = Join-Path -Path $vmBackupPath -ChildPath $subfolderCurrent
+    $previousExportPath = Join-Path -Path $vmBackupPath -ChildPath $subfolderPrevious
 
-    # Prompt for selecting virtual machines to back up
-    Write-Host "Enter the numbers of the virtual machines to back up, separated by commas (or 'all' for all)"
-    $selection = Read-Host
+    Write-Log "Preparing export for VM '$vmName' to $currentExportPath..."
 
-    # If 'all' is entered, select all machines
-    if ($selection -eq 'all') {
-        $selectedVMs = $vms
-    } else {
-        # Otherwise, select machines by numbers
-        $selectedIndices = $selection.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ -match '^\d+$' } | ForEach-Object { [int]$_ }
-        $selectedVMs = $vmList | Where-Object { $selectedIndices -contains $_.Index } | ForEach-Object { $_.VM }
-    }
-
-    # Check if any VMs were selected
-    if ($selectedVMs.Count -eq 0) {
-        Write-Log "No valid virtual machines selected. Exiting."
-        exit
-    }
-
-    # Export the selected virtual machines
-    foreach ($vm in $selectedVMs) {
-        $vmName = $vm.Name
-        $vmBackupPath = Join-Path -Path $backupRoot -ChildPath $vmName
-        $currentExportPath = Join-Path -Path $vmBackupPath -ChildPath $subfolderCurrent
-        $previousExportPath = Join-Path -Path $vmBackupPath -ChildPath $subfolderPrevious
-
-        Write-Log "Preparing export for VM '$vmName' to $currentExportPath..."
-
-        # Delete previous backup folder if it exists with retry logic
-        if (Test-Path $previousExportPath) {
-            Write-Log "Deleting previous backup: $previousExportPath"
-            $maxAttempts = 3
-            $attempt = 1
-            $success = $false
-            while (-not $success -and $attempt -le $maxAttempts) {
-                try {
-                    Write-Log "Attempt $attempt of $maxAttempts to delete previous backup"
-                    Get-ChildItem -Path $previousExportPath -Recurse | Remove-Item -Recurse -Force -ErrorAction Stop
-                    Remove-Item -Path $previousExportPath -Recurse -Force -ErrorAction Stop
-                    $success = $true
-                    Write-Log "Successfully deleted previous backup"
-                }
-                catch {
-                    Write-Log "Error deleting previous backup (attempt $attempt): $_"
-                    if ($attempt -eq $maxAttempts) {
-                        Write-Log "Failed to delete previous backup after $maxAttempts attempts."
-                        $previousContents = Get-ChildItem -Path $previousExportPath -Recurse -ErrorAction SilentlyContinue
-                        if ($previousContents) {
-                            Write-Log "Contents of previous folder: $($previousContents | ForEach-Object { $_.FullName })"
-                        }
-                    }
-                    Start-Sleep -Seconds 10  # Delay for large files (2-4 TB)
-                }
-                $attempt++
-            }
-        }
-
-        # Wait before moving current to previous
-        Write-Log "Waiting 5 seconds before moving current to previous..."
-        Start-Sleep -Seconds 5
-
-        # Move current backup to previous
-        if (Test-Path $currentExportPath) {
-            Write-Log "Moving current backup to 'previous'"
+    # Delete previous backup folder if it exists with retry logic
+    if (Test-Path $previousExportPath) {
+        Write-Log "Deleting previous backup: $previousExportPath"
+        $maxAttempts = 3
+        $attempt = 1
+        $success = $false
+        while (-not $success -and $attempt -le $maxAttempts) {
             try {
-                Rename-Item -Path $currentExportPath -NewName $subfolderPrevious -ErrorAction Stop
+                Write-Log "Attempt $attempt of $maxAttempts to delete previous backup"
+                Get-ChildItem -Path $previousExportPath -Recurse | Remove-Item -Recurse -Force -ErrorAction Stop
+                Remove-Item -Path $previousExportPath -Recurse -Force -ErrorAction Stop
+                $success = $true
+                Write-Log "Successfully deleted previous backup"
             }
             catch {
-                Write-Log "Error moving current backup to previous: $_"
-            }
-        }
-
-        # Thoroughly clean or create current folder with retry logic
-        if (Test-Path $currentExportPath) {
-            Write-Log "Cleaning existing current folder: $currentExportPath"
-            $maxAttempts = 3
-            $attempt = 1
-            $success = $false
-            while (-not $success -and $attempt -le $maxAttempts) {
-                try {
-                    Write-Log "Attempt $attempt of $maxAttempts to clean current folder"
-                    Get-ChildItem -Path $currentExportPath -Recurse | Remove-Item -Recurse -Force -ErrorAction Stop
-                    $success = $true
-                    Write-Log "Successfully cleaned current folder"
-                }
-                catch {
-                    Write-Log "Error cleaning current folder (attempt $attempt): $_"
-                    if ($attempt -eq $maxAttempts) {
-                        Write-Log "Failed to clean after $maxAttempts attempts. Trying to delete entire current folder..."
-                        try {
-                            Remove-Item -Path $currentExportPath -Recurse -Force -ErrorAction Stop
-                            Write-Log "Current folder fully deleted due to cleaning errors"
-                        }
-                        catch {
-                            Write-Log "Critical error deleting current folder: $_"
-                        }
+                Write-Log "Error deleting previous backup (attempt $attempt): $_"
+                if ($attempt -eq $maxAttempts) {
+                    Write-Log "Failed to delete previous backup after $maxAttempts attempts."
+                    $previousContents = Get-ChildItem -Path $previousExportPath -Recurse -ErrorAction SilentlyContinue
+                    if ($previousContents) {
+                        Write-Log "Contents of previous folder: $($previousContents | ForEach-Object { $_.FullName })"
                     }
-                    Start-Sleep -Seconds 10  # Delay for large files (2-4 TB)
                 }
-                $attempt++
+                Start-Sleep -Seconds 10  # Delay for large files (2-4 TB)
             }
-        }
-
-        # Create new current folder
-        Write-Log "Creating new current folder: $currentExportPath"
-        New-Item -ItemType Directory -Path $currentExportPath -Force | Out-Null
-
-        # Wait for filesystem synchronization
-        Write-Log "Waiting 10 seconds for filesystem synchronization..."
-        Start-Sleep -Seconds 10
-
-        # Verify current folder is empty before export
-        $currentContents = Get-ChildItem -Path $currentExportPath
-        if ($currentContents) {
-            Write-Log "Warning: current folder is not empty before export: $currentExportPath"
-            Write-Log "Contents: $($currentContents | ForEach-Object { $_.Name })"
-        } else {
-            Write-Log "Current folder is empty and ready for export"
-        }
-
-        # Export virtual machine
-        try {
-            Write-Log "Exporting VM '$vmName' to $currentExportPath..."
-            Export-VM -Name $vmName -Path $currentExportPath -ErrorAction Stop
-            Write-Log "VM '$vmName' successfully exported to $currentExportPath"
-        }
-        catch {
-            Write-Log "Error exporting VM '$vmName': $_"
+            $attempt++
         }
     }
-} else {
-    Write-Log "No available virtual machines on this host."
+
+    # Wait before moving current to previous
+    Write-Log "Waiting 10 seconds before moving current to previous..."
+    Start-Sleep -Seconds 10
+
+    # Move current backup to previous with retry logic
+    if (Test-Path $currentExportPath) {
+        Write-Log "Moving current backup to 'previous'"
+        $maxAttempts = 3
+        $attempt = 1
+        $success = $false
+        while (-not $success -and $attempt -le $maxAttempts) {
+            try {
+                Write-Log "Attempt $attempt of $maxAttempts to move current to previous"
+                Rename-Item -Path $currentExportPath -NewName $subfolderPrevious -ErrorAction Stop
+                # Verify move was successful
+                if ((Test-Path $previousExportPath) -and (-not (Test-Path $currentExportPath))) {
+                    $success = $true
+                    Write-Log "Successfully moved current backup to previous"
+                } else {
+                    throw "Verification failed: previous folder not found or current folder still exists"
+                }
+            }
+            catch {
+                Write-Log "Error moving current backup to previous (attempt $attempt): $_"
+                if ($attempt -eq $maxAttempts) {
+                    Write-Log "Failed to move current backup to previous after $maxAttempts attempts."
+                }
+                Start-Sleep -Seconds 10  # Delay for large files (2-4 TB)
+            }
+            $attempt++
+        }
+    }
+
+    # Wait before cleaning current folder
+    Write-Log "Waiting 15 seconds before cleaning current folder..."
+    Start-Sleep -Seconds 15
+
+    # Thoroughly clean or create current folder with retry logic
+    if (Test-Path $currentExportPath) {
+        Write-Log "Cleaning existing current folder: $currentExportPath"
+        $maxAttempts = 3
+        $attempt = 1
+        $success = $false
+        while (-not $success -and $attempt -le $maxAttempts) {
+            try {
+                Write-Log "Attempt $attempt of $maxAttempts to clean current folder"
+                Get-ChildItem -Path $currentExportPath -Recurse | Remove-Item -Recurse -Force -ErrorAction Stop
+                $success = $true
+                Write-Log "Successfully cleaned current folder"
+            }
+            catch {
+                Write-Log "Error cleaning current folder (attempt $attempt): $_"
+                if ($attempt -eq $maxAttempts) {
+                    Write-Log "Failed to clean after $maxAttempts attempts. Trying to delete entire current folder..."
+                    try {
+                        Remove-Item -Path $currentExportPath -Recurse -Force -ErrorAction Stop
+                        Write-Log "Current folder fully deleted due to cleaning errors"
+                    }
+                    catch {
+                        Write-Log "Critical error deleting current folder: $_"
+                    }
+                }
+                Start-Sleep -Seconds 10  # Delay for large files (2-4 TB)
+            }
+            $attempt++
+        }
+    }
+
+    # Create new current folder
+    Write-Log "Creating new current folder: $currentExportPath"
+    New-Item -ItemType Directory -Path $currentExportPath -Force | Out-Null
+
+    # Wait for filesystem synchronization
+    Write-Log "Waiting 10 seconds for filesystem synchronization..."
+    Start-Sleep -Seconds 10
+
+    # Verify current folder is empty before export
+    $currentContents = Get-ChildItem -Path $currentExportPath
+    if ($currentContents) {
+        Write-Log "Warning: current folder is not empty before export: $currentExportPath"
+        Write-Log "Contents: $($currentContents | ForEach-Object { $_.FullName })"
+    } else {
+        Write-Log "Current folder is empty and ready for export"
+    }
+
+    # Export virtual machine
+    try {
+        Write-Log "Exporting VM '$vmName' to $currentExportPath..."
+        Export-VM -Name $vmName -Path $currentExportPath -ErrorAction Stop
+        Write-Log "VM '$vmName' successfully exported to $currentExportPath"
+    }
+    catch {
+        Write-Log "Error exporting VM '$vmName': $_"
+        $currentContents = Get-ChildItem -Path $currentExportPath -Recurse -ErrorAction SilentlyContinue
+        if ($currentContents) {
+            Write-Log "Contents of current folder after export failure: $($currentContents | ForEach-Object { $_.FullName })"
+        }
+    }
 }
 
 Write-Log "Backup of all VMs completed."
